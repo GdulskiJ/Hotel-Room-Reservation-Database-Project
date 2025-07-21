@@ -1,0 +1,207 @@
+
+--1
+--Napisz procedurę w Transact-SQL dokonującą rezerwacji. Procedura będzie przyjmowała jako
+--parametry: Id gościa, Id pokoju oraz daty przyjazdu, odjazdu i rezerwacji, oraz zaliczke. Procedura powinna sprawdzić czy pokój jest dostępny, tzn.
+--czy nie istnieje rezerwacja tego samego pokoju w podanym terminie oraz czy wpłacona zaliczka jest wieksza niz 10% ceny pokoju.
+
+ALTER PROCEDURE ZarezerwujPokoj
+    @IdKlienta INT,
+    @IdPokoju INT,
+    @DataRezerwacji DATE,
+    @DataPrzyjazdu DATE,
+    @DataOdjazdu DATE,
+    @Zaliczka INT
+AS
+BEGIN
+    DECLARE @NoweIdRezerwacji INT;
+    SELECT @NoweIdRezerwacji = ISNULL(MAX(IdRezerwacje), 0) + 1 FROM Rezerwacje;
+
+    DECLARE @CenaPokoju INT;
+    SELECT @CenaPokoju = Cena
+    FROM Pokoje
+    WHERE IdPokoju = @IdPokoju;
+
+    DECLARE @MinimalnaZaliczka INT;
+    SET @MinimalnaZaliczka = (0.1 * @CenaPokoju);
+
+    IF @Zaliczka >= @MinimalnaZaliczka
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM Rezerwacje
+            WHERE Pokoje_IdPokoju = @IdPokoju
+              AND (
+                 (@DataPrzyjazdu BETWEEN DataPrzyjazdu AND DataOdjazdu)
+                OR (@DataOdjazdu BETWEEN DataPrzyjazdu AND DataOdjazdu)
+              )
+        )
+        BEGIN
+            INSERT INTO Rezerwacje (IdRezerwacje, Klienci_IdKlienta, Datarezerwacji, DataPrzyjazdu, DataOdjazdu, Pokoje_IdPokoju, Zaplacona)
+            VALUES (@NoweIdRezerwacji, @IdKlienta, @DataRezerwacji, @DataPrzyjazdu, @DataOdjazdu, @IdPokoju, @Zaliczka);
+
+            PRINT 'Rezerwacja zrealizowana pomyślnie.';
+        END
+        ELSE
+        BEGIN
+            PRINT 'Pokój jest już zarezerwowany w podanym terminie.';
+        END
+    END
+    ELSE
+    BEGIN
+    PRINT 'Zaliczka musi wynosić przynajmniej 10% ceny pokoju (' + CONVERT(VARCHAR(20), @MinimalnaZaliczka) + '). Podana zaliczka jest zbyt niska.';
+    END
+END;
+
+
+EXEC ZarezerwujPokoj 1, 1, '2025-01-01', '2025-02-11',  '2025-02-12', 9
+
+
+
+
+
+--2
+--Przy pomocy kursora przejrzyj wszystkich pracowników i zmodyfikuj wynagrodzenia tak, aby zarobki osób z przedziału
+--podanego jako parametr, zostały zwiekszone o dany procent również bedącym parametrem.
+
+
+Create PROCEDURE ZwiekszWynagrodzenieKursorem
+    @KwotaOd NUMERIC(6,2),
+    @KwotaDo NUMERIC(6,2),
+    @ProcentZwiekszenia NUMERIC(6,2)
+AS
+BEGIN
+    DECLARE @PracownikId INT, @ObecnaKwota NUMERIC(6,2);
+
+    DECLARE PracownicyCursor CURSOR FOR
+    SELECT Pracownicy_IdPracownika, Zatobki
+    FROM ZarobkiHistoria
+    WHERE Zatobki BETWEEN @KwotaOd AND @KwotaDo;
+
+    OPEN PracownicyCursor;
+
+    FETCH NEXT FROM PracownicyCursor INTO @PracownikId, @ObecnaKwota;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        UPDATE ZarobkiHistoria
+        SET Zatobki = @ObecnaKwota +(Zatobki * @ProcentZwiekszenia / 100)
+        WHERE Pracownicy_IdPracownika = @PracownikId;
+
+        FETCH NEXT FROM PracownicyCursor INTO @PracownikId, @ObecnaKwota;
+    END
+
+    CLOSE PracownicyCursor;
+    DEALLOCATE PracownicyCursor
+    PRINT 'Wynagrodzenia pracowników zostały zwiększone pomyślnie.';
+END;
+
+
+SELECT
+    P.Imie,
+    P.Nazwisko,
+    ZH.Zatobki,
+    ZH.Data_Od
+FROM
+    Pracownicy P
+full JOIN
+    ZarobkiHistoria ZH ON P.IdPracownika = ZH.Pracownicy_IdPracownika;
+
+
+EXEC ZwiekszWynagrodzenieKursorem 100.00, 1700.00, 10.00;
+
+
+--3
+--Napisz wyzwalacz w Transact-SQL, który przy próbie usunięcia rezerwacji sprawdzi, czy rezerwacja
+--została zapłacona i czy nie dotyczy 2022 roku. Jeśli nie, to wyzwalacz nie powinien dopuścić do
+--usunięcia i zgłosić błąd. Inaczej mówiąc: Można usuwać wyłącznie rezerwacje z roku innego niż 2022,
+--które zostały zapłacone.
+
+CREATE TRIGGER SprawdzRezerwacje
+ON Rezerwacje
+For DELETE
+AS
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM deleted d
+        WHERE d.Zaplacona >= 1 AND YEAR(d.DataPrzyjazdu) != 2022
+
+    )
+    BEGIN
+        DELETE FROM Rezerwacje
+        FROM Rezerwacje r
+        INNER JOIN deleted d ON r.IdRezerwacje = d.IdRezerwacje;
+    END
+    ELSE
+    BEGIN
+        ROLLBACK
+    END
+END;
+
+
+     go
+
+  DELETE FROM Rezerwacje WHERE IdRezerwacje = 231;
+
+Select * FROM Rezerwacje;
+DISABLE TRIGGER SprawdzRezerwacje ON Rezerwacje
+
+
+  INSERT INTO Rezerwacje (IdRezerwacje, Klienci_IdKlienta, Datarezerwacji, DataPrzyjazdu, DataOdjazdu, Pokoje_IdPokoju, Zaplacona)
+VALUES
+  (231, 1, '2022-05-01', '2022-06-01', '2022-06-10', 1, 1000),
+    (221, 1, '2022-06-01', '2022-07-01', '2022-07-10', 1, 1000);	
+
+--4
+--Napisz wyzwalacz w Transact-SQL, który:
+--• Przy próbie wstawienia rezerwacji sprawdzi, czy data od jest wcześniejsza od daty do. Jeśli
+--nie, to wyzwalacz nie powinien dopuścić do wstawienia i zgłosić błąd.
+--• Nie pozwoli zmienić osoby dokonującej rezerwacji.
+--• Nie pozwoli usunąć rezerwacji z przed 2022.
+
+
+
+Create TRIGGER SprawdzRezerwacje2
+ON Rezerwacje
+FOR INSERT, UPDATE, DELETE
+AS
+BEGIN
+    IF (SELECT COUNT(*) FROM inserted WHERE DataPrzyjazdu >= DataOdjazdu) > 0
+    BEGIN
+        PRINT 'Nie można wstawić lub zaktualizować rezerwacji. Data od musi być wcześniejsza niż data do.';
+        ROLLBACK;
+        RETURN;
+    END
+
+    IF UPDATE(Klienci_IdKlienta)
+    BEGIN
+        PRINT'Nie można zmieniać osoby dokonującej rezerwacji.';
+        ROLLBACK;
+        RETURN;
+    END
+
+    IF (SELECT COUNT(*) FROM deleted WHERE YEAR(DataPrzyjazdu) <= 2022) > 0
+    BEGIN
+        PRINT'Nie można usunąć rezerwacji z przed 2022 roku.';
+        ROLLBACK;
+        RETURN;
+    END
+END;
+
+
+
+Select * FROM Rezerwacje;
+
+UPDATE Rezerwacje
+SET
+    DataPrzyjazdu = '2023-01-15',
+    DataOdjazdu = '2023-01-10'
+WHERE
+    IdRezerwacje = 2;
+
+UPDATE Rezerwacje
+SET
+    Klienci_IdKlienta=2
+WHERE
+    IdRezerwacje = 2;
+
